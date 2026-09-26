@@ -24,9 +24,9 @@ jobs:
         run: |
           git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
           cd /tmp/sdks
-          git sparse-checkout set iPhoneOS16.5.sdk
+          git sparse-checkout set iPhoneOS14.5.sdk
           mkdir -p $GITHUB_WORKSPACE/theos/sdks
-          cp -r /tmp/sdks/iPhoneOS16.5.sdk $GITHUB_WORKSPACE/theos/sdks/
+          cp -r /tmp/sdks/iPhoneOS14.5.sdk $GITHUB_WORKSPACE/theos/sdks/
 
       - name: Install iOS toolchain
         run: |
