@@ -39,8 +39,7 @@ static char NVBBGKey; // VC 关联的背景视图
 - (void)configure;
 @end
 
-@interface NVBSettingsListController : UITableViewController
-@end
+@class NVBSettingsListController;
 
 #pragma mark - 工具函数
 
@@ -137,7 +136,7 @@ static NSString *NVBContextForClassName(NSString *name) {
         // 播完自动回到开头, 实现无缝循环
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(playerDidEnd:)
-                                                     name:AVPlayerItemDidPlayToEndTime
+                                                     name:@"AVPlayerItemDidPlayToEndTime"
                                                    object:nil];
     }
     return self;
@@ -194,7 +193,7 @@ static NSString *NVBContextForClassName(NSString *name) {
     AVPlayer *p = self.players[ctx];
     if (p && !force && [self.playerPaths[ctx] isEqualToString:path]) return p;
 
-    [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTime object:self.items[ctx]];
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"AVPlayerItemDidPlayToEndTime" object:self.items[ctx]];
     [p pause];
     [self.players removeObjectForKey:ctx];
     [self.items removeObjectForKey:ctx];
@@ -307,7 +306,7 @@ static NSString *NVBContextForClassName(NSString *name) {
         _contextKey = [key copy];
         self.backgroundColor = [UIColor clearColor];
         self.userInteractionEnabled = NO; // 不拦截触摸
-        CALayer *videoLayer = [AVPlayerLayer layer];
+        AVPlayerLayer *videoLayer = [AVPlayerLayer layer];
         videoLayer.frame = self.bounds;
         videoLayer.videoGravity = AVLayerVideoGravityResizeAspectFill; // 尺寸自适应铺满
         videoLayer.masksToBounds = YES;
