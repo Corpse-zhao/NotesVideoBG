@@ -1,0 +1,41 @@
+name: Build NotesVideoBG
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Theos
+        uses: actions/checkout@v4
+        with:
+          repository: theos/theos
+          ref: master
+          submodules: recursive
+          path: theos
+
+      - name: Install iOS SDK
+        run: |
+          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
+          cd /tmp/sdks
+          git sparse-checkout set iPhoneOS16.5.sdk
+          mkdir -p $GITHUB_WORKSPACE/theos/sdks
+          cp -r /tmp/sdks/iPhoneOS16.5.sdk $GITHUB_WORKSPACE/theos/sdks/
+
+      - name: Build package
+        env:
+          THEOS: ${{ github.workspace }}/theos
+        run: make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NotesVideoBG-deb
+          path: packages/*.deb
+          if-no-files-found: error

@@ -1,0 +1,9 @@
+Package: com.nvb.notesvideobg
+Name: NotesVideoBG
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Apple Notes video background tweak. Video backgrounds for the note body/editor and folder pages with adaptive sizing, adjustable blur/opacity/volume, and in-tweak material import from the photo library.
+Maintainer: nvb
+Author: nvb
+Section: Tweaks
+Depends: mobilesubstrate
