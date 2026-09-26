@@ -7,6 +7,6 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = NotesVideoBG
 NotesVideoBG_FILES = Tweak.x
 NotesVideoBG_FRAMEWORKS = UIKit AVFoundation PhotosUI CoreMedia
-NotesVideoBG_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
+NotesVideoBG_CFLAGS = -fobjc-arc -Wno-deprecated-declarations -fno-threadsafe-statics
 
 include $(THEOS_MAKE_PATH)/tweak.mk

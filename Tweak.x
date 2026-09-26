@@ -134,11 +134,13 @@ static void NVBPrefsChanged(CFNotificationCenterRef center, void *observer,
 
 @implementation NVBManager
 
+static NVBManager *_nvbSharedInstance = nil;
+
 + (instancetype)shared {
-    static NVBManager *m = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ m = [self new]; });
-    return m;
+    if (!_nvbSharedInstance) {
+        _nvbSharedInstance = [self new];
+    }
+    return _nvbSharedInstance;
 }
 
 - (instancetype)init {
