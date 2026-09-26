@@ -28,6 +28,13 @@ jobs:
           mkdir -p $GITHUB_WORKSPACE/theos/sdks
           cp -r /tmp/sdks/iPhoneOS16.5.sdk $GITHUB_WORKSPACE/theos/sdks/
 
+      - name: Install iOS toolchain
+        run: |
+          mkdir -p $GITHUB_WORKSPACE/theos/toolchain/linux/iphone
+          curl -L -q --retry 3 -o /tmp/tc.tar.lzma https://github.com/sbingner/llvm-project/releases/latest/download/linux-ios-arm64e-clang-toolchain.tar.lzma
+          tar --lzma -xf /tmp/tc.tar.lzma -C $GITHUB_WORKSPACE/theos/toolchain/linux/iphone
+          $GITHUB_WORKSPACE/theos/toolchain/linux/iphone/bin/clang --version
+
       - name: Build package
         env:
           THEOS: ${{ github.workspace }}/theos
