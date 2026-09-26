@@ -1,22 +1,24 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <PhotosUI/PhotosUI.h>
+#import <CoreFoundation/CFNotificationCenter.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <math.h>
 
 // ============================================================
-// NotesVideoBG - 苹果备忘录视频背景插件 (rootless / iOS 16.x)
+// 备忘录视频背景 (NotesVideoBG) - rootless / Dopamine / ElleKit
+// 作者: 板栗仁
 //
-// 功能:
-//  - 正文/编辑页、文件夹、笔记列表、画廊、搜索、最近删除 六类
-//    独立视频背景 + 内部浏览默认背景兜底
-//  - 视频尺寸自适应 (AspectFill)
-//  - 模糊度 / 不透明度 / 音量 可调
-//  - 插件内直接从相册上传素材 (PHPicker, 无需相册权限)
+//  - 正文/编辑页、文件夹、笔记列表、画廊、搜索、最近删除
+//    六类独立视频背景 + 内部浏览默认背景兜底
+//  - 多素材库: 相册导入多个视频, 各界面自由选用
+//  - 尺寸自适应 (AspectFill), 模糊度/不透明度/音量可调
+//  - 内置设置页 + 系统"设置"(PreferenceLoader/OneSettings)入口
 // ============================================================
 
 #define NVB_SUITE @"com.nvb.notesvideobg"
+#define NVB_DARWIN_NOTE "com.nvb.notesvideobg/prefs.changed"
 #define NVB_MEDIA_DIR_NAME @"NVBMedia"
 
 static NSString * const NVBContextNote      = @"note";        // 正文/编辑页
@@ -31,7 +33,8 @@ static char NVBBGKey; // VC 关联的背景视图
 
 @class NVBManager;
 
-// 前置声明
+// ---------- 完整类声明 (提前给出, 避免前向声明报错) ----------
+
 @interface NVBVideoBackgroundView : UIView
 @property (nonatomic, copy) NSString *contextKey;
 @property (nonatomic, strong) AVPlayerLayer *videoLayer;
@@ -39,11 +42,38 @@ static char NVBBGKey; // VC 关联的背景视图
 - (void)configure;
 @end
 
-@class NVBSettingsListController;
+@interface NVBMaterialListController : UITableViewController <PHPickerViewControllerDelegate>
+@property (nonatomic, copy) NSString *contextKey; // 选择素材的目标界面
+@end
+
+@interface NVBSettingsListController : UITableViewController <PHPickerViewControllerDelegate>
+@property (nonatomic, copy) NSString *pendingContext;
+@end
+
+@interface NVBManager : NSObject
+@property (nonatomic, strong) NSMutableDictionary<NSString *, AVPlayer *> *players;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, AVPlayerItem *> *items;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *playerPaths;
++ (instancetype)shared;
+- (NSUserDefaults *)prefs;
+- (BOOL)masterEnabled;
+- (NSMutableDictionary *)settingsForContext:(NSString *)ctx;
+- (void)saveSettings:(NSMutableDictionary *)s forContext:(NSString *)ctx;
+- (NSString *)mediaDirectory;
+- (NSArray<NSDictionary *> *)materialLibrary;
+- (void)saveMaterialLibrary:(NSArray<NSDictionary *> *)lib;
+- (NSDictionary *)materialWithId:(NSString *)mid;
+- (NSString *)addMaterialFromFile:(NSURL *)srcURL name:(NSString *)name error:(NSError **)error;
+- (void)removeMaterialWithId:(NSString *)mid;
+- (AVPlayer *)playerForContext:(NSString *)ctx forceRebuild:(BOOL)force;
+- (void)applyToViewController:(UIViewController *)vc context:(NSString *)ctx;
+- (void)refreshVisibleBackgrounds;
+- (void)openSettings:(id)sender;
+@end
 
 #pragma mark - 工具函数
 
-// 高斯模糊 CAFilter (私有, iOS 全系统可用), 实现可调模糊度
+// 可调模糊度: 私有 CAFilter gaussianBlur
 static id NVBBlurFilter(CGFloat radius) {
     Class cls = objc_getClass("CAFilter");
     SEL sel = NSSelectorFromString(@"filterWithName:");
@@ -51,10 +81,6 @@ static id NVBBlurFilter(CGFloat radius) {
     id filter = ((id (*)(id, SEL, id))objc_msgSend)((id)cls, sel, @"gaussianBlur");
     if (filter) {
         [filter setValue:@(radius) forKey:@"inputRadius"];
-        // 模糊边缘不透明, 避免视频边缘发白
-        if ([filter respondsToSelector:@selector(setInputOpaqueness:)]) {
-            ((void (*)(id, SEL, BOOL))objc_msgSend)(filter, @selector(setInputOpaqueness:), YES);
-        }
     }
     return filter;
 }
@@ -81,43 +107,30 @@ static UIViewController *NVBTopViewController(void) {
     return root;
 }
 
-// 类名 -> 上下文映射：备忘录为私有框架(IC* 前缀)，按关键词识别各类页面
-// 注意：命中顺序很重要，先排除精确类名，再按特征关键词匹配
+// 类名 -> 上下文映射 (备忘录私有框架 IC* 前缀)
 static NSString *NVBContextForClassName(NSString *name) {
     if (!name || ![name hasPrefix:@"IC"]) return nil;
-    // 精确类名：由专用 Hook 负责，兜底不再处理
     if ([name isEqualToString:@"ICNoteBodyViewController"] ||
         [name isEqualToString:@"ICNoteEditViewController"] ||
-        [name isEqualToString:@"ICFolderViewController"]) return nil;
-    if ([name isEqualToString:@"ICSettingsViewController"]) return nil;
-    // 画廊 / 搜索 / 最近删除 (关键词在前，避免被通用 Note 规则误吞)
+        [name isEqualToString:@"ICFolderViewController"] ||
+        [name isEqualToString:@"ICSettingsViewController"]) return nil;
     if ([name containsString:@"Gallery"])          return NVBContextGallery;
     if ([name containsString:@"Search"])           return NVBContextSearch;
     if ([name containsString:@"RecentlyDeleted"] ||
         [name containsString:@"Trash"])            return NVBContextRecent;
-    // 笔记列表：ICNotesViewController / *NoteList* 等 (Body/Edit 已在上面排除)
     if ([name containsString:@"NotesView"] ||
         [name containsString:@"NoteList"] ||
         [name containsString:@"Note"])             return NVBContextNotesList;
     return NVBContextInternal;
 }
 
-#pragma mark - 设置/播放管理器
+// Darwin 通知回调: 系统"设置"(OneSettings)里改了配置 -> 实时刷新
+static void NVBPrefsChanged(CFNotificationCenterRef center, void *observer,
+                            CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    [[NVBManager shared] refreshVisibleBackgrounds];
+}
 
-@interface NVBManager : NSObject
-@property (nonatomic, strong) NSMutableDictionary<NSString *, AVPlayer *> *players;
-@property (nonatomic, strong) NSMutableDictionary<NSString *, AVPlayerItem *> *items;
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *playerPaths;
-+ (instancetype)shared;
-- (NSUserDefaults *)prefs;
-- (NSMutableDictionary *)settingsForContext:(NSString *)ctx;
-- (void)saveSettings:(NSDictionary *)s forContext:(NSString *)ctx;
-- (NSString *)mediaDirectory;
-- (AVPlayer *)playerForContext:(NSString *)ctx forceRebuild:(BOOL)force;
-- (void)applyToViewController:(UIViewController *)vc context:(NSString *)ctx;
-- (void)refreshVisibleBackgrounds;
-- (void)openSettings:(id)sender;
-@end
+#pragma mark - 管理器: 配置/素材库/播放
 
 @implementation NVBManager
 
@@ -133,7 +146,7 @@ static NSString *NVBContextForClassName(NSString *name) {
         _players     = [NSMutableDictionary new];
         _items       = [NSMutableDictionary new];
         _playerPaths = [NSMutableDictionary new];
-        // 播完自动回到开头, 实现无缝循环
+        // 播完自动回到开头, 循环播放
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(playerDidEnd:)
                                                      name:@"AVPlayerItemDidPlayToEndTime"
@@ -156,27 +169,18 @@ static NSString *NVBContextForClassName(NSString *name) {
     return [[NSUserDefaults alloc] initWithSuiteName:NVB_SUITE];
 }
 
-- (NSDictionary *)defaultsForContext:(NSString *)ctx {
-    return @{ @"enabled": @NO,    // 页开开关
-              @"path":    @"",    // 已选素材路径
-              @"blur":    @8.0,   // 模糊度 0-30
-              @"alpha":   @0.65,  // 不透明度 0-1
-              @"volume":  @1.0 }; // 音量 0-1
+- (BOOL)masterEnabled {
+    id v = [[self prefs] objectForKey:@"master_enabled"];
+    return v ? [v boolValue] : YES; // 默认开
 }
 
-- (NSMutableDictionary *)settingsForContext:(NSString *)ctx {
-    NSDictionary *stored = [[self prefs] dictionaryForKey:ctx] ?: @{};
-    NSMutableDictionary *s = [[self defaultsForContext:ctx] mutableCopy];
-    [s addEntriesFromDictionary:stored];
-    return s;
+- (CGFloat)numForKey:(NSString *)k default:(CGFloat)d {
+    id v = [[self prefs] objectForKey:k];
+    return v ? [v doubleValue] : d;
 }
 
-- (void)saveSettings:(NSDictionary *)s forContext:(NSString *)ctx {
-    [[self prefs] setObject:s forKey:ctx];
-    [[self prefs] synchronize];
-}
+// ---- 素材库 ----
 
-// 素材存放目录: 备忘录沙盒 Documents/NVBMedia (进程内读取绝对可靠)
 - (NSString *)mediaDirectory {
     NSString *dir = [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/" NVB_MEDIA_DIR_NAME];
     [[NSFileManager defaultManager] createDirectoryAtPath:dir
@@ -184,7 +188,89 @@ static NSString *NVBContextForClassName(NSString *name) {
     return dir;
 }
 
-// 每个 context 一个 AVPlayer, 播完回开头循环
+- (NSArray<NSDictionary *> *)materialLibrary {
+    NSArray *lib = [[self prefs] arrayForKey:@"materials"];
+    return lib ?: @[];
+}
+
+- (void)saveMaterialLibrary:(NSArray<NSDictionary *> *)lib {
+    [[self prefs] setObject:lib forKey:@"materials"];
+    [[self prefs] synchronize];
+}
+
+- (NSDictionary *)materialWithId:(NSString *)mid {
+    if (mid.length == 0) return nil;
+    for (NSDictionary *m in [self materialLibrary]) {
+        if ([m[@"id"] isEqualToString:mid]) return m;
+    }
+    return nil;
+}
+
+// 导入素材: 复制进备忘录沙盒并登记, 返回素材 id
+- (NSString *)addMaterialFromFile:(NSURL *)srcURL name:(NSString *)name error:(NSError **)error {
+    NSString *mid = [[NSUUID UUID] UUIDString];
+    NSString *ext = srcURL.pathExtension.length ? srcURL.pathExtension : @"mov";
+    NSString *dest = [[self mediaDirectory]
+                      stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.%@", mid, ext]];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    [fm removeItemAtPath:dest error:nil];
+    if (![fm copyItemAtURL:srcURL toURL:[NSURL fileURLWithPath:dest] error:error]) return nil;
+
+    NSMutableArray *lib = [[self materialLibrary] mutableCopy];
+    [lib addObject:@{ @"id": mid,
+                      @"name": (name.length ? name : [NSString stringWithFormat:@"素材%lu", (unsigned long)lib.count + 1]) }];
+    [self saveMaterialLibrary:lib];
+    return mid;
+}
+
+// 删除素材: 移除文件与登记, 并清掉引用它的界面配置
+- (void)removeMaterialWithId:(NSString *)mid {
+    NSMutableArray *lib = [[self materialLibrary] mutableCopy];
+    NSString *path = nil;
+    for (NSDictionary *m in lib) {
+        if ([m[@"id"] isEqualToString:mid]) { path = m[@"path"]; [lib removeObject:m]; break; }
+    }
+    [self saveMaterialLibrary:lib];
+    if (path) [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+
+    for (NSString *ctx in @[NVBContextNote, NVBContextFolder, NVBContextNotesList,
+                            NVBContextGallery, NVBContextSearch, NVBContextRecent, NVBContextInternal]) {
+        if ([[[self prefs] stringForKey:[ctx stringByAppendingString:@"_material"]] isEqualToString:mid]) {
+            [[self prefs] removeObjectForKey:[ctx stringByAppendingString:@"_material"]];
+        }
+    }
+    [[self prefs] synchronize];
+}
+
+// ---- 各界面配置 (扁平键, 兼容系统设置/OneSettings 直写) ----
+
+- (NSMutableDictionary *)settingsForContext:(NSString *)ctx {
+    NSUserDefaults *p = [self prefs];
+    NSString *mid = [p stringForKey:[ctx stringByAppendingString:@"_material"]] ?: @"";
+    NSDictionary *mat = [self materialWithId:mid];
+    return [@{ @"master":      @([self masterEnabled]),
+               @"enabled":     @([p boolForKey:[ctx stringByAppendingString:@"_enabled"]]),
+               @"materialId":  mid,
+               @"materialName": mat[@"name"] ?: @"",
+               @"path":        mat[@"path"] ?: @"",
+               @"blur":        @([self numForKey:[ctx stringByAppendingString:@"_blur"] default:8.0]),
+               @"alpha":       @([self numForKey:[ctx stringByAppendingString:@"_alpha"] default:0.65]),
+               @"volume":      @([self numForKey:[ctx stringByAppendingString:@"_volume"] default:1.0]) }
+            mutableCopy];
+}
+
+- (void)saveSettings:(NSMutableDictionary *)s forContext:(NSString *)ctx {
+    NSUserDefaults *p = [self prefs];
+    [p setBool:[s[@"enabled"] boolValue] forKey:[ctx stringByAppendingString:@"_enabled"]];
+    [p setObject:(s[@"materialId"] ?: @"") forKey:[ctx stringByAppendingString:@"_material"]];
+    [p setObject:@([s[@"blur"] doubleValue]) forKey:[ctx stringByAppendingString:@"_blur"]];
+    [p setObject:@([s[@"alpha"] doubleValue]) forKey:[ctx stringByAppendingString:@"_alpha"]];
+    [p setObject:@([s[@"volume"] doubleValue]) forKey:[ctx stringByAppendingString:@"_volume"]];
+    [p synchronize];
+}
+
+// ---- 播放器 (每界面一个, 播完回开头循环) ----
+
 - (AVPlayer *)playerForContext:(NSString *)ctx forceRebuild:(BOOL)force {
     NSDictionary *s = [self settingsForContext:ctx];
     NSString *path = s[@"path"];
@@ -193,7 +279,9 @@ static NSString *NVBContextForClassName(NSString *name) {
     AVPlayer *p = self.players[ctx];
     if (p && !force && [self.playerPaths[ctx] isEqualToString:path]) return p;
 
-    [[NSNotificationCenter defaultCenter] removeObserver:self name:@"AVPlayerItemDidPlayToEndTime" object:self.items[ctx]];
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:@"AVPlayerItemDidPlayToEndTime"
+                                                  object:self.items[ctx]];
     [p pause];
     [self.players removeObjectForKey:ctx];
     [self.items removeObjectForKey:ctx];
@@ -206,19 +294,21 @@ static NSString *NVBContextForClassName(NSString *name) {
     self.playerPaths[ctx] = path;
     p.actionAtItemEnd = AVPlayerActionAtItemEndNone;
     p.volume = [s[@"volume"] doubleValue];
-    p.muted  = ([s[@"volume"] doubleValue] <= 0.001);
+    p.muted  = (p.volume <= 0.001);
     [p play];
     return p;
 }
 
-// 把背景应用到某个 VC (幂等, 可反复调用以刷新配置)
+// ---- 背景应用 ----
+
 - (void)applyToViewController:(UIViewController *)vc context:(NSString *)ctx {
     if (!vc.isViewLoaded || !vc.view) return;
-    if ([vc isKindOfClass:NSClassFromString(@"NVBSettingsListController")]) return;
+    if ([vc isKindOfClass:[NVBSettingsListController class]]) return;
+    if ([vc isKindOfClass:[NVBMaterialListController class]]) return;
     if ([vc isKindOfClass:[PHPickerViewController class]]) return;
 
     NSDictionary *s = [self settingsForContext:ctx];
-    BOOL on = [s[@"enabled"] boolValue] && [s[@"path"] length] > 0;
+    BOOL on = [s[@"master"] boolValue] && [s[@"enabled"] boolValue] && [s[@"path"] length] > 0;
 
     NVBVideoBackgroundView *bg = objc_getAssociatedObject(vc, &NVBBGKey);
     if (!on) {
@@ -229,13 +319,8 @@ static NSString *NVBContextForClassName(NSString *name) {
         return;
     }
 
-    if (!bg) {
-        bg = [[NVBVideoBackgroundView alloc] initWithFrame:vc.view.bounds contextKey:ctx];
-        bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [vc.view insertSubview:bg atIndex:0];
-        objc_setAssociatedObject(vc, &NVBBGKey, bg, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    } else if (![bg.contextKey isEqualToString:ctx]) {
-        // 同一 VC 切换了模式 (如画廊/列表切换)，按新上下文重建背景
+    if (!bg || ![bg.contextKey isEqualToString:ctx]) {
+        // 新建, 或同一 VC 切换模式(如画廊/列表)时重建
         [bg removeFromSuperview];
         bg = [[NVBVideoBackgroundView alloc] initWithFrame:vc.view.bounds contextKey:ctx];
         bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -248,7 +333,6 @@ static NSString *NVBContextForClassName(NSString *name) {
     [self clearBackgroundsOfView:vc.view depth:0];
 }
 
-// 递归清透明: 表格/集合/文本/单元格 背景设为透明, 让视频透出来
 - (void)clearBackgroundsOfView:(UIView *)view depth:(NSInteger)depth {
     if (depth > 4) return;
     for (UIView *sub in view.subviews) {
@@ -265,15 +349,12 @@ static NSString *NVBContextForClassName(NSString *name) {
     }
 }
 
-// 设置实时生效: 遍历窗口里所有背景视图重新 configure
 - (void)refreshVisibleBackgrounds {
-    NSArray<UIScene *> *scenes = UIApplication.sharedApplication.connectedScenes.allObjects;
-    for (UIScene *scene in scenes) {
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes.allObjects) {
         if (![scene isKindOfClass:[UIWindowScene class]]) continue;
         for (UIWindow *w in ((UIWindowScene *)scene).windows) [self refreshInView:w];
     }
-    NSArray<UIWindow *> *legacy = UIApplication.sharedApplication.windows;
-    for (UIWindow *w in legacy) [self refreshInView:w];
+    for (UIWindow *w in UIApplication.sharedApplication.windows) [self refreshInView:w];
 }
 
 - (void)refreshInView:(UIView *)view {
@@ -284,9 +365,7 @@ static NSString *NVBContextForClassName(NSString *name) {
     for (UIView *sub in view.subviews) [self refreshInView:sub];
 }
 
-// 设置页入口
 - (void)openSettings:(id)sender {
-    if (objc_getAssociatedObject(self, &NVBBGKey)) {} // no-op, 防 unused 警告
     UIViewController *host = NVBTopViewController();
     if (!host) return;
     NVBSettingsListController *list = [[NVBSettingsListController alloc] initWithStyle:UITableViewStyleInsetGrouped];
@@ -325,7 +404,7 @@ static NSString *NVBContextForClassName(NSString *name) {
 - (void)configure {
     NVBManager *mgr = [NVBManager shared];
     NSDictionary *s = [mgr settingsForContext:self.contextKey];
-    BOOL on = [s[@"enabled"] boolValue] && [s[@"path"] length] > 0;
+    BOOL on = [s[@"master"] boolValue] && [s[@"enabled"] boolValue] && [s[@"path"] length] > 0;
     self.hidden = !on;
     if (!on) {
         self.videoLayer.player = nil;
@@ -346,8 +425,7 @@ static NSString *NVBContextForClassName(NSString *name) {
     }
 
     // 不透明度
-    CGFloat alpha = [s[@"alpha"] doubleValue];
-    self.videoLayer.opacity = (float)MAX(0.0, MIN(1.0, alpha));
+    self.videoLayer.opacity = (float)MAX(0.0, MIN(1.0, [s[@"alpha"] doubleValue]));
 
     // 音量
     if (p) {
@@ -359,11 +437,128 @@ static NSString *NVBContextForClassName(NSString *name) {
 
 @end
 
-#pragma mark - 内置设置页 (含相册导入)
+#pragma mark - 素材库管理页 (相册导入 / 选用 / 删除)
 
-@interface NVBSettingsListController : UITableViewController <PHPickerViewControllerDelegate>
-@property (nonatomic, copy) NSString *pendingContext;
+@implementation NVBMaterialListController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"选择素材";
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
+                                                      target:self action:@selector(importFromLibrary)];
+    self.tableView.backgroundColor = [UIColor systemBackgroundColor];
+}
+
+- (NSInteger)materialCount {
+    return (NSInteger)[[NVBManager shared] materialLibrary].count;
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return [self materialCount] + 1; // +1: 从相册导入
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSArray<NSDictionary *> *lib = [[NVBManager shared] materialLibrary];
+    NSDictionary *s = [[NVBManager shared] settingsForContext:self.contextKey];
+
+    if (indexPath.row < (NSInteger)lib.count) { // 素材行
+        UITableViewCell *c = [tableView dequeueReusableCellWithIdentifier:@"nvb-mat"];
+        if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"nvb-mat"];
+        NSDictionary *m = lib[indexPath.row];
+        c.textLabel.text = m[@"name"];
+        c.detailTextLabel.text = @"视频素材";
+        c.accessoryType = [s[@"materialId"] isEqualToString:m[@"id"]]
+                          ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+        c.editingAccessoryType = UITableViewCellAccessoryDeleteButton;
+        return c;
+    }
+    // 导入行
+    UITableViewCell *c = [tableView dequeueReusableCellWithIdentifier:@"nvb-import"];
+    if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"nvb-import"];
+    c.textLabel.text = @"从相册导入视频素材";
+    c.textLabel.textColor = [UIColor systemBlueColor];
+    c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    return c;
+}
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    return indexPath.row < [self materialCount]; // 仅素材行可删
+}
+
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (editingStyle != UITableViewCellEditingStyleDelete) return;
+    NSArray<NSDictionary *> *lib = [[NVBManager shared] materialLibrary];
+    if (indexPath.row >= (NSInteger)lib.count) return;
+    [[NVBManager shared] removeMaterialWithId:lib[indexPath.row][@"id"]];
+    [[NVBManager shared] refreshVisibleBackgrounds];
+    [tableView reloadData];
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.row >= [self materialCount]) {
+        [self importFromLibrary];
+        return;
+    }
+    // 选用该素材
+    NSArray<NSDictionary *> *lib = [[NVBManager shared] materialLibrary];
+    NSMutableDictionary *s = [[NVBManager shared] settingsForContext:self.contextKey];
+    s[@"materialId"] = lib[indexPath.row][@"id"];
+    [[NVBManager shared] saveSettings:s forContext:self.contextKey];
+    [[NVBManager shared] playerForContext:self.contextKey forceRebuild:YES];
+    [[NVBManager shared] refreshVisibleBackgrounds];
+    [self.navigationController popViewControllerAnimated:YES];
+}
+
+// 相册导入 (PHPicker, 无需相册权限)
+- (void)importFromLibrary {
+    PHPickerConfiguration *cfg = [[PHPickerConfiguration alloc] init];
+    cfg.filter = [PHPickerFilter videosFilter];
+    cfg.selectionLimit = 1;
+    PHPickerViewController *pc = [[PHPickerViewController alloc] initWithConfiguration:cfg];
+    pc.delegate = self;
+    [self presentViewController:pc animated:YES completion:nil];
+}
+
+- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+    if (!results.count) return;
+    PHPickerResult *res = results.firstObject;
+    NSItemProvider *provider = res.provider;
+    __weak typeof(self) wself = self;
+
+    [provider loadFileRepresentationForTypeIdentifier:@"public.movie"
+                                    completionHandler:^(NSURL *url, NSError *error) {
+        if (!url || error) return; // 临时文件回调结束后即删, 失败只能重选
+        NSError *copyError = nil;
+        // 复制进备忘录沙盒并登记素材库
+        [[NVBManager shared] addMaterialFromFile:url
+                                            name:url.lastPathComponent.stringByDeletingPathExtension
+                                           error:&copyError];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(wself) sself = wself;
+            if (!sself) return;
+            if (!copyError) {
+                [[NVBManager shared] refreshVisibleBackgrounds];
+                [sself.tableView reloadData];
+            } else {
+                UIAlertController *ac = [UIAlertController
+                    alertControllerWithTitle:@"导入失败"
+                                     message:(copyError.localizedDescription ?: @"无法复制所选视频")
+                              preferredStyle:UIAlertControllerStyleAlert];
+                [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+                [sself presentViewController:ac animated:YES completion:nil];
+            }
+        });
+    }];
+}
+
 @end
+
+#pragma mark - 内置设置页 (每界面: 开关/素材/模糊度/不透明度/音量)
 
 @implementation NVBSettingsListController
 
@@ -379,13 +574,13 @@ static NSString *NVBContextForClassName(NSString *name) {
 - (void)close { [self dismissViewControllerAnimated:YES completion:nil]; }
 
 - (NSArray<NSArray<NSString *> *> *)contextDefs {
-    return @[ @[NVBContextNote,      @"正文 / 编辑页",    @"笔记编辑界面"],
-              @[NVBContextFolder,    @"文件夹",           @"文件夹列表页"],
-              @[NVBContextNotesList, @"笔记列表",         @"文件夹内的笔记列表页"],
-              @[NVBContextGallery,   @"画廊",             @"画廊视图页面；若与笔记列表共用控制器，两个开关均会生效"],
-              @[NVBContextSearch,    @"搜索",             @"搜索页面"],
-              @[NVBContextRecent,    @"最近删除",         @"最近删除页面"],
-              @[NVBContextInternal,  @"内部浏览默认背景",  @"为未被识别的内部页兜底；若某专用背景关闭，对应页面也可能回落到此处"] ];
+    return @[ @[NVBContextNote,      @"正文 / 编辑页",    @""],
+              @[NVBContextFolder,    @"文件夹",           @""],
+              @[NVBContextNotesList, @"笔记列表",         @""],
+              @[NVBContextGallery,   @"画廊",             @"若与笔记列表共用同一控制器, 两个开关均会生效"],
+              @[NVBContextSearch,    @"搜索",             @""],
+              @[NVBContextRecent,    @"最近删除",         @""],
+              @[NVBContextInternal,  @"内部浏览默认背景",  @"为未被识别的内部页兜底; 关闭专用背景的页面可能回落到此处"] ];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -397,10 +592,7 @@ static NSString *NVBContextForClassName(NSString *name) {
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if ([self.contextDefs[section][0] isEqualToString:NVBContextInternal]) {
-        return @"备忘录为私有框架，个别页面可能无法精确识别，将使用此默认背景兜底。";
-    }
-    return @"开启后需选择素材方可生效。";
+    return self.contextDefs[section][2];
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -421,10 +613,10 @@ static NSString *NVBContextForClassName(NSString *name) {
     NSDictionary *s = [[NVBManager shared] settingsForContext:ctx];
 
     switch (indexPath.row) {
-        case 0: { // 页开开关
+        case 0: { // 开关
             UITableViewCell *c = [tableView dequeueReusableCellWithIdentifier:@"nvb-toggle"];
             if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"nvb-toggle"];
-            c.textLabel.text = @"页开开关";
+            c.textLabel.text = @"开启背景";
             c.selectionStyle = UITableViewCellSelectionStyleNone;
             UISwitch *sw = [[UISwitch alloc] init];
             sw.on  = [s[@"enabled"] boolValue];
@@ -433,12 +625,12 @@ static NSString *NVBContextForClassName(NSString *name) {
             c.accessoryView = sw;
             return c;
         }
-        case 1: { // 已选素材 / 相册导入
+        case 1: { // 选择素材
             UITableViewCell *c = [tableView dequeueReusableCellWithIdentifier:@"nvb-media"];
             if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"nvb-media"];
-            c.textLabel.text = @"选择素材（相册导入）";
-            NSString *path = s[@"path"];
-            c.detailTextLabel.text = path.length > 0 ? @"已选素材" : @"未选择";
+            c.textLabel.text = @"选择素材";
+            NSString *name = s[@"materialName"];
+            c.detailTextLabel.text = name.length ? name : @"未选择";
             c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
             return c;
         }
@@ -446,7 +638,7 @@ static NSString *NVBContextForClassName(NSString *name) {
             UITableViewCell *c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
             c.selectionStyle = UITableViewCellSelectionStyleNone;
 
-            NSString *title; float value; float min = 0, max = 1; NSString *fmt;
+            NSString *title; float value; float max; NSString *fmt;
             if (indexPath.row == 2)      { title = @"模糊度";   value = [s[@"blur"]   floatValue]; max = 30; fmt = @"%.0f";   }
             else if (indexPath.row == 3) { title = @"不透明度"; value = [s[@"alpha"]  floatValue]; max = 1;  fmt = @"%.2f";   }
             else                         { title = @"音量";     value = [s[@"volume"] floatValue]; max = 1;  fmt = @"%.0f%%"; }
@@ -470,7 +662,7 @@ static NSString *NVBContextForClassName(NSString *name) {
 
             UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(16, 32, c.contentView.bounds.size.width - 32, 30)];
             sl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-            sl.minimumValue = min;
+            sl.minimumValue = 0;
             sl.maximumValue = max;
             sl.value = value;
             sl.tag = indexPath.section * 10 + indexPath.row;
@@ -484,16 +676,9 @@ static NSString *NVBContextForClassName(NSString *name) {
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     if (indexPath.row != 1) return;
-    NSString *ctx = [self contextKeyForSection:indexPath.section];
-    self.pendingContext = ctx;
-
-    // PHPicker 独立进程选择, 无需相册权限
-    PHPickerConfiguration *cfg = [[PHPickerConfiguration alloc] init];
-    cfg.filter = [PHPickerFilter videosFilter];
-    cfg.selectionLimit = 1;
-    PHPickerViewController *pc = [[PHPickerViewController alloc] initWithConfiguration:cfg];
-    pc.delegate = self;
-    [self presentViewController:pc animated:YES completion:nil];
+    NVBMaterialListController *ml = [[NVBMaterialListController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    ml.contextKey = [self contextKeyForSection:indexPath.section];
+    [self.navigationController pushViewController:ml animated:YES];
 }
 
 #pragma mark 控件回调
@@ -527,51 +712,6 @@ static NSString *NVBContextForClassName(NSString *name) {
     }
 }
 
-#pragma mark PHPickerDelegate - 相册视频导入
-
-- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
-    NSString *ctx = self.pendingContext;
-    [picker dismissViewControllerAnimated:YES completion:nil];
-    if (!results.count || !ctx) return;
-    PHPickerResult *res = results.firstObject;
-    __weak typeof(self) wself = self;
-
-    [res.provider loadFileRepresentationForTypeIdentifier:@"public.movie"
-                                        completionHandler:^(NSURL *url, NSError *error) {
-        if (!url || error) {
-            return;
-        }
-        // 拷贝进备忘录沙盒 (loadFileRepresentation 的临时文件在回调结束后会被删除, 必须当场复制)
-        NSString *ext = url.pathExtension.length ? url.pathExtension : @"mov";
-        NSString *dest = [[[NVBManager shared] mediaDirectory]
-                          stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.%@", ctx, ext]];
-        NSFileManager *fm = [NSFileManager defaultManager];
-        [fm removeItemAtPath:dest error:nil];
-        NSError *copyError = nil;
-        BOOL ok = [fm copyItemAtURL:url toURL:[NSURL fileURLWithPath:dest] error:&copyError];
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(wself) sself = wself;
-            if (!sself) return;
-            if (ok) {
-                NSMutableDictionary *s = [[NVBManager shared] settingsForContext:ctx];
-                s[@"path"] = dest;
-                [[NVBManager shared] saveSettings:s forContext:ctx];
-                [[NVBManager shared] playerForContext:ctx forceRebuild:YES];
-                [[NVBManager shared] refreshVisibleBackgrounds];
-                [sself.tableView reloadData];
-            } else {
-                UIAlertController *ac = [UIAlertController
-                    alertControllerWithTitle:@"导入失败"
-                                     message:(copyError.localizedDescription ?: @"无法复制所选视频")
-                              preferredStyle:UIAlertControllerStyleAlert];
-                [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-                [sself presentViewController:ac animated:YES completion:nil];
-            }
-        });
-    }];
-}
-
 @end
 
 #pragma mark - 备忘录 Hook
@@ -599,7 +739,7 @@ static NSString *NVBContextForClassName(NSString *name) {
 - (void)viewDidAppear:(BOOL)animated  { %orig; [[NVBManager shared] applyToViewController:self context:NVBContextFolder]; }
 %end
 
-// 设置页入口: 导航栏右侧加 "视频背景" 按钮
+// 设置页入口: 导航栏右侧 "视频背景" 按钮
 %hook ICSettingsViewController
 - (void)viewDidLoad {
     %orig;
@@ -611,7 +751,7 @@ static NSString *NVBContextForClassName(NSString *name) {
 }
 %end
 
-// 兜底: 按 IC* 类名关键词分发到 笔记列表/画廊/搜索/最近删除/内部默认 背景
+// 兜底: IC* 类名关键词分发 笔记列表/画廊/搜索/最近删除/内部默认
 %hook UIViewController
 - (void)viewWillAppear:(BOOL)animated {
     %orig;
@@ -620,7 +760,7 @@ static NSString *NVBContextForClassName(NSString *name) {
         NSString *ctx = NVBContextForClassName(name);
         if (!ctx) return; // 精确类名由上方专用 Hook 处理
         if ([name containsString:@"Keyboard"] || [name containsString:@"Picker"]) return;
-        // 仅铺满屏幕(或接近全屏的 sheet)的内部页才套用背景
+        // 仅铺满屏幕(或接近全屏 sheet)的内部页才套用
         CGSize vs = self.view.bounds.size;
         CGSize ss = UIScreen.mainScreen.bounds.size;
         BOOL fit = (fabs(vs.width - ss.width) < 32 && fabs(vs.height - ss.height) < 32) ||
@@ -630,3 +770,13 @@ static NSString *NVBContextForClassName(NSString *name) {
     }
 }
 %end
+
+// Darwin 通知: 系统"设置"/OneSettings 修改配置后实时刷新
+%ctor {
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    NULL,
+                                    NVBPrefsChanged,
+                                    CFSTR(NVB_DARWIN_NOTE),
+                                    NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+}
