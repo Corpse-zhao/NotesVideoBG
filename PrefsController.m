@@ -1,22 +1,53 @@
 #import "NVBCommon.h"
 #import <PhotosUI/PhotosUI.h>
-#import <CoreFoundation/CFNotificationCenter.h>
+#import <objc/runtime.h>
 
 // ============================================================
 // 设置面板 (NVBPrefs.bundle, 仅加载进 系统"设置"/OneSettings)
-//  - 总开关 + 7 类界面独立配置
-//  - 每个功能分区内置"选择素材"(相册导入/选用/删除)
-//  - 所有滑条带名称与实时数值
+// 作者: 板栗仁
+//
+// v2.2 重构: 采用社区最经典的声明式方案
+//  - 主面板: 标准 PSListController + Root.plist
+//    (PSSwitchCell / PSSliderCell 原生控件, 直写 NSUserDefaults,
+//     改动后 PostNotification 通知备忘录实时刷新)
+//  - "选择素材": PSLinkCell detail 推入自管理页面 (相册导入/选用/删除)
+//  - 不再手工模拟 PSListController 内部行为, 彻底规避设置闪退
 // ============================================================
+
+// 手工声明 Preferences 私有类 (SDK 未附带头文件)
+@interface PSListController : UIViewController
+- (NSArray *)specifiers;
+- (NSArray *)loadSpecifiersFromPlistName:(NSString *)name target:(id)target;
+@end
+
+@interface PSSpecifier : NSObject
+- (id)propertyForKey:(NSString *)key;
+@end
 
 #pragma mark - 素材管理页 (相册导入 / 选用 / 删除)
 
 @interface NVBMaterialListController : UITableViewController <PHPickerViewControllerDelegate>
 @property (nonatomic, copy) NSString *contextKey;   // 目标界面
 @property (nonatomic, copy) NSString *contextTitle; // 目标界面显示名
+- (instancetype)initWithSpecifier:(id)spec;         // PS detail 推入调用
 @end
 
 @implementation NVBMaterialListController
+
+// PS 推入 detail 控制器时使用 initWithSpecifier:, 从 specifier 属性取目标界面
+- (instancetype)initWithSpecifier:(PSSpecifier *)spec {
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        _contextKey    = NVBContextNote;
+        _contextTitle  = @"";
+        @try {
+            NSString *k = [spec propertyForKey:@"context"];
+            if (k.length) _contextKey = [k copy];
+            NSString *t = [spec propertyForKey:@"contextTitle"];
+            if (t.length) _contextTitle = [t copy];
+        } @catch (NSException *e) {}
+    }
+    return self;
+}
 
 - (void)viewDidLoad {
     [super viewDidLoad];
@@ -25,10 +56,6 @@
         [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
                                                       target:self action:@selector(importFromLibrary)];
     self.tableView.backgroundColor = [UIColor systemBackgroundColor];
-}
-
-- (NSString *)footerText {
-    return [NSString stringWithFormat:@"为「%@」管理背景素材：点按素材可选用或删除，打勾为当前使用。", self.contextTitle ?: @""];
 }
 
 - (NSInteger)materialCount {
@@ -42,7 +69,8 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return [self footerText];
+    return [NSString stringWithFormat:@"为「%@」管理背景素材：点按素材可选用或删除，打勾为当前使用。",
+            self.contextTitle ?: @""];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -85,7 +113,6 @@
         NSMutableDictionary *s = [[NVBManager shared] settingsForContext:self.contextKey];
         s[@"materialId"] = m[@"id"];
         [[NVBManager shared] saveSettings:s forContext:self.contextKey];
-        [[NVBManager shared] playerForContext:self.contextKey forceRebuild:YES];
         [[NVBManager shared] refreshVisibleBackgrounds];
         [self.tableView reloadData];
     }]];
@@ -117,7 +144,7 @@
 
     [provider loadFileRepresentationForTypeIdentifier:@"public.movie"
                                     completionHandler:^(NSURL *url, NSError *error) {
-        if (!url || error) return; // 临时文件回调结束后即删, 失败只能重选
+        if (!url || error) return;
         NSError *copyError = nil;
         [[NVBManager shared] addMaterialFromFile:url
                                             name:url.lastPathComponent.stringByDeletingPathExtension
@@ -141,214 +168,45 @@
 
 @end
 
-#pragma mark - 主设置页 (总开关 + 7 类界面配置)
+#pragma mark - 设置入口 (标准 PSListController + 声明式 Root.plist)
 
-@interface NVBSettingsListController : UITableViewController
-@end
-
-@implementation NVBSettingsListController
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"备忘录视频背景";
-    self.navigationItem.rightBarButtonItem =
-        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
-                                                      target:self action:@selector(showHelp)];
-    self.tableView.backgroundColor = [UIColor systemBackgroundColor];
+// 拿到 PSListController 的 _specifiers 实例变量 (运行时, 不依赖头文件)
+static Ivar NVBSpecifiersIvar(void) {
+    static Ivar iv = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        iv = class_getInstanceVariable(objc_getClass("PSListController"), "_specifiers");
+    });
+    return iv;
 }
-
-- (void)showHelp {
-    UIAlertController *ac = [UIAlertController
-        alertControllerWithTitle:@"备忘录视频背景"
-                         message:@"1. 打开上方总开关\n2. 在各界面分区打开「开启背景」\n3. 点「选择素材」从相册导入视频\n4. 用滑条调节模糊度 / 不透明度 / 音量\n\n改动即时生效，无需重启备忘录。"
-                  preferredStyle:UIAlertControllerStyleAlert];
-    [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:ac animated:YES completion:nil];
-}
-
-- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 1 + NVBContextDefinitions().count; // 0: 总开关, 1..7: 各界面
-}
-
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    if (section == 0) return @"总开关";
-    return NVBContextDefinitions()[section - 1][1];
-}
-
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0) return @"关闭后所有界面背景停用。";
-    return NVBContextDefinitions()[section - 1][2];
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return (section == 0) ? 1 : 5;
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0) return 44.0;
-    return (indexPath.row >= 2) ? 64.0 : 44.0;
-}
-
-- (NSString *)contextKeyForSection:(NSInteger)section {
-    NSArray<NSArray<NSString *> *> *defs = NVBContextDefinitions();
-    if (section < 1 || section > (NSInteger)defs.count) return NVBContextNote;
-    return defs[section - 1][0];
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0) { // 总开关
-        UITableViewCell *c = [tableView dequeueReusableCellWithIdentifier:@"nvb-master"];
-        if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"nvb-master"];
-        c.textLabel.text = @"启用视频背景";
-        c.selectionStyle = UITableViewCellSelectionStyleNone;
-        UISwitch *sw = [[UISwitch alloc] init];
-        sw.on = [[NVBManager shared] masterEnabled];
-        [sw addTarget:self action:@selector(masterChanged:) forControlEvents:UIControlEventValueChanged];
-        c.accessoryView = sw;
-        return c;
-    }
-
-    NSString *ctx = [self contextKeyForSection:indexPath.section];
-    NSDictionary *s = [[NVBManager shared] settingsForContext:ctx];
-
-    switch (indexPath.row) {
-        case 0: { // 开启背景
-            UITableViewCell *c = [tableView dequeueReusableCellWithIdentifier:@"nvb-toggle"];
-            if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"nvb-toggle"];
-            c.textLabel.text = @"开启背景";
-            c.selectionStyle = UITableViewCellSelectionStyleNone;
-            UISwitch *sw = [[UISwitch alloc] init];
-            sw.on  = [s[@"enabled"] boolValue];
-            sw.tag = indexPath.section;
-            [sw addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
-            c.accessoryView = sw;
-            return c;
-        }
-        case 1: { // 选择素材 (每个功能分区内置)
-            UITableViewCell *c = [tableView dequeueReusableCellWithIdentifier:@"nvb-media"];
-            if (!c) c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"nvb-media"];
-            c.textLabel.text = @"选择素材";
-            NSString *name = s[@"materialName"];
-            c.detailTextLabel.text = name.length ? name : @"未选择(点此导入)";
-            c.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-            return c;
-        }
-        default: { // 2 模糊度 / 3 不透明度 / 4 音量
-            UITableViewCell *c = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:nil];
-            c.selectionStyle = UITableViewCellSelectionStyleNone;
-
-            NSString *title; float value; float max; NSString *fmt;
-            if (indexPath.row == 2)      { title = @"模糊度";   value = [s[@"blur"]   floatValue]; max = 30; fmt = @"%.0f";   }
-            else if (indexPath.row == 3) { title = @"不透明度"; value = [s[@"alpha"]  floatValue]; max = 1;  fmt = @"%.2f";   }
-            else                         { title = @"音量";     value = [s[@"volume"] floatValue]; max = 1;  fmt = @"%.0f%%"; }
-
-            UILabel *lb = [[UILabel alloc] initWithFrame:CGRectMake(16, 8, 160, 20)];
-            lb.font = [UIFont systemFontOfSize:15];
-            lb.text = title;
-            lb.tag = 998;
-            [c.contentView addSubview:lb];
-
-            UILabel *val = [[UILabel alloc] initWithFrame:CGRectMake(c.contentView.bounds.size.width - 90, 8, 74, 20)];
-            val.font = [UIFont systemFontOfSize:13];
-            val.textColor = [UIColor secondaryLabelColor];
-            val.textAlignment = NSTextAlignmentRight;
-            val.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-            val.tag = 999;
-            val.text = (indexPath.row == 4)
-                ? [NSString stringWithFormat:fmt, value * 100]
-                : [NSString stringWithFormat:fmt, value];
-            [c.contentView addSubview:val];
-
-            UISlider *sl = [[UISlider alloc] initWithFrame:CGRectMake(16, 32, c.contentView.bounds.size.width - 32, 30)];
-            sl.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-            sl.minimumValue = 0;
-            sl.maximumValue = max;
-            sl.value = value;
-            sl.tag = indexPath.section * 10 + indexPath.row;
-            [sl addTarget:self action:@selector(sliderChanged:) forControlEvents:UIControlEventValueChanged];
-            [c.contentView addSubview:sl];
-            return c;
-        }
-    }
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    if (indexPath.section == 0 || indexPath.row != 1) return;
-    NVBMaterialListController *ml = [[NVBMaterialListController alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    ml.contextKey   = [self contextKeyForSection:indexPath.section];
-    ml.contextTitle = NVBContextDefinitions()[indexPath.section - 1][1];
-    UINavigationController *nav = self.navigationController ?: self.parentViewController.navigationController;
-    [nav pushViewController:ml animated:YES];
-}
-
-#pragma mark 控件回调
-
-- (void)masterChanged:(UISwitch *)sw {
-    NVBManager *mgr = [NVBManager shared];
-    [[mgr prefs] setBool:sw.on forKey:@"master_enabled"];
-    [[mgr prefs] synchronize];
-    [mgr postChangeNotification];
-    [mgr refreshVisibleBackgrounds];
-}
-
-- (void)toggleChanged:(UISwitch *)sw {
-    NSString *ctx = [self contextKeyForSection:sw.tag];
-    NSMutableDictionary *s = [[NVBManager shared] settingsForContext:ctx];
-    s[@"enabled"] = @(sw.on);
-    [[NVBManager shared] saveSettings:s forContext:ctx];
-    [[NVBManager shared] refreshVisibleBackgrounds];
-}
-
-- (void)sliderChanged:(UISlider *)sl {
-    NSInteger section = sl.tag / 10;
-    NSInteger row = sl.tag % 10;
-    NSString *ctx = [self contextKeyForSection:section];
-    NSMutableDictionary *s = [[NVBManager shared] settingsForContext:ctx];
-
-    if (row == 2)      s[@"blur"]   = @(sl.value);
-    else if (row == 3) s[@"alpha"]  = @(sl.value);
-    else               s[@"volume"] = @(sl.value);
-
-    [[NVBManager shared] saveSettings:s forContext:ctx];
-    [[NVBManager shared] refreshVisibleBackgrounds];
-
-    UILabel *val = (UILabel *)[sl.superview viewWithTag:999];
-    if (val) {
-        if (row == 2)      val.text = [NSString stringWithFormat:@"%.0f", sl.value];
-        else if (row == 3) val.text = [NSString stringWithFormat:@"%.2f", sl.value];
-        else               val.text = [NSString stringWithFormat:@"%.0f%%", sl.value * 100];
-    }
-}
-
-@end
-
-#pragma mark - 设置入口 (PSListController, 供 PreferenceLoader/OneSettings 实例化)
-
-// 手工声明, 不依赖 Preferences 头文件 (SDK 未附带)
-@interface PSListController : UIViewController
-- (NSArray *)specifiers;
-@end
 
 @interface NVBPrefsController : PSListController
 @end
 
 @implementation NVBPrefsController
 
+// 经典写法: 首次调用时从 Root.plist 加载并缓存到 _specifiers
 - (NSArray *)specifiers {
-    return @[]; // 内容由内嵌面板提供, 不使用 specifier 表
+    Ivar iv = NVBSpecifiersIvar();
+    if (iv) {
+        id cur = object_getIvar(self, iv);
+        if (cur) return cur;
+        @try {
+            cur = [self loadSpecifiersFromPlistName:@"Root" target:self];
+            if (cur) object_setIvar(self, iv, cur);
+            return cur ?: @[];
+        } @catch (NSException *e) {
+            return @[];
+        }
+    }
+    return [self loadSpecifiersFromPlistName:@"Root" target:self] ?: @[];
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"备忘录视频背景";
-
-    NVBSettingsListController *list = [[NVBSettingsListController alloc] initWithStyle:UITableViewStyleInsetGrouped];
-    [self addChildViewController:list];
-    list.view.frame = self.view.bounds;
-    list.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [self.view addSubview:list.view];
-    [list didMoveToParentViewController:self];
+    @try {
+        self.title = @"备忘录视频背景";
+    } @catch (NSException *e) {}
 }
 
 @end
