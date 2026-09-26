@@ -2,7 +2,7 @@ export TARGET = iphone:clang:latest:16.0
 export THEOS_PACKAGE_SCHEME = rootless
 INSTALL_TARGET_PROCESSES = MobileNotes
 
-include $(THEOS_MAKE_PATH)/common.mk
+include $(THEOS)/makefiles/common.mk
 
 # 实例 1: 主插件 (注入备忘录, 视频背景渲染)
 TWEAK_NAME = NotesVideoBG
