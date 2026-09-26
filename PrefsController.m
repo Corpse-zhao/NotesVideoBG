@@ -1,6 +1,12 @@
 #import "NVBCommon.h"
-#import <PhotosUI/PhotosUI.h>
+#import <dlfcn.h>
 #import <objc/runtime.h>
+
+// 注意: 本文件严禁 #import <PhotosUI/PhotosUI.h> 或任何静态 PHPicker 符号引用!
+// 老工具链生成的 PHPickerViewControllerDelegate 协议元数据会在类注册 (readClass) 时
+// 导致宿主进程崩溃 (v2.0 备忘录闪退 / v2.1 设置闪退均由此引起)。
+// 因此 PHPicker 一律通过 dlopen + NSClassFromString + objc_msgSend 运行时调用,
+// 代理回调只实现同名选择器, 不声明协议。
 
 // ============================================================
 // 设置面板 (NVBPrefs.bundle, 仅加载进 系统"设置"/OneSettings)
@@ -26,7 +32,7 @@
 
 #pragma mark - 素材管理页 (相册导入 / 选用 / 删除)
 
-@interface NVBMaterialListController : UITableViewController <PHPickerViewControllerDelegate>
+@interface NVBMaterialListController : UITableViewController
 @property (nonatomic, copy) NSString *contextKey;   // 目标界面
 @property (nonatomic, copy) NSString *contextTitle; // 目标界面显示名
 - (instancetype)initWithSpecifier:(id)spec;         // PS detail 推入调用
@@ -125,21 +131,42 @@
     [self presentViewController:ac animated:YES completion:nil];
 }
 
-// 相册导入 (PHPicker, 无需相册权限)
+// 相册导入 (PHPicker 运行时调用, 不静态引用 PhotosUI; 无需相册权限)
 - (void)importFromLibrary {
-    PHPickerConfiguration *cfg = [[PHPickerConfiguration alloc] init];
-    cfg.filter = [PHPickerFilter videosFilter];
-    cfg.selectionLimit = 1;
-    PHPickerViewController *pc = [[PHPickerViewController alloc] initWithConfiguration:cfg];
-    pc.delegate = self;
+    // 设置进程默认不加载 PhotosUI, 先 dlopen 确保可用
+    void *h = dlopen("/System/Library/Frameworks/PhotosUI.framework/PhotosUI", RTLD_LAZY);
+    Class pickerCls = h ? NSClassFromString(@"PHPickerViewController") : nil;
+    Class cfgCls    = h ? NSClassFromString(@"PHPickerConfiguration") : nil;
+    if (!pickerCls || !cfgCls) {
+        UIAlertController *ac = [UIAlertController
+            alertControllerWithTitle:@"暂不可用"
+                             message:@"当前环境无法调起相册选择器"
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+        return;
+    }
+
+    id cfg = [[cfgCls alloc] init];
+    Class filterCls = NSClassFromString(@"PHPickerFilter");
+    if (filterCls) {
+        id filter = ((id (*)(id, SEL))objc_msgSend)(filterCls, @selector(videosFilter));
+        ((void (*)(id, SEL, id))objc_msgSend)(cfg, @selector(setFilter:), filter);
+    }
+    ((void (*)(id, SEL, long))objc_msgSend)(cfg, @selector(setSelectionLimit:), (long)1);
+
+    id pc = ((id (*)(id, SEL))objc_msgSend)(pickerCls, @selector(alloc));
+    pc    = ((id (*)(id, SEL, id))objc_msgSend)(pc, @selector(initWithConfiguration:), cfg);
+    ((void (*)(id, SEL, id))objc_msgSend)(pc, @selector(setDelegate:), self);
     [self presentViewController:pc animated:YES completion:nil];
 }
 
-- (void)picker:(PHPickerViewController *)picker didFinishPicking:(NSArray<PHPickerResult *> *)results {
+// PHPicker 代理回调 (运行时实现选择器, 不声明协议)
+- (void)picker:(id)picker didFinishPicking:(NSArray *)results {
     [picker dismissViewControllerAnimated:YES completion:nil];
     if (!results.count) return;
-    PHPickerResult *res = results.firstObject;
-    NSItemProvider *provider = res.itemProvider;
+    id res = results.firstObject;
+    NSItemProvider *provider = ((NSItemProvider *(*)(id, SEL))objc_msgSend)(res, @selector(itemProvider));
     __weak typeof(self) wself = self;
 
     [provider loadFileRepresentationForTypeIdentifier:@"public.movie"

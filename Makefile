@@ -15,7 +15,8 @@ include $(THEOS_MAKE_PATH)/tweak.mk
 # 实例 2: 设置面板 (加载进 系统"设置"/OneSettings, 素材管理+参数调节)
 BUNDLE_NAME = NVBPrefs
 NVBPrefs_FILES = PrefsController.m NVBCommon.m
-NVBPrefs_FRAMEWORKS = UIKit AVFoundation CoreMedia PhotosUI
+# 注意: 不链接 PhotosUI (PHPicker 全部运行时调用, 静态元数据会导致宿主崩溃)
+NVBPrefs_FRAMEWORKS = UIKit AVFoundation CoreMedia
 NVBPrefs_LDFLAGS = -framework Preferences
 NVBPrefs_CFLAGS = -fobjc-arc -fno-threadsafe-statics -Wno-deprecated-declarations
 NVBPrefs_INSTALL_PATH = /Library/PreferenceBundles
