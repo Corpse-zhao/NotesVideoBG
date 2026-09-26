@@ -46,7 +46,7 @@ static char NVBBGKey; // VC 关联的背景视图
 @property (nonatomic, copy) NSString *contextKey; // 选择素材的目标界面
 @end
 
-@interface NVBSettingsListController : UITableViewController <PHPickerViewControllerDelegate>
+@interface NVBSettingsListController : UITableViewController
 @property (nonatomic, copy) NSString *pendingContext;
 @end
 
@@ -472,7 +472,7 @@ static void NVBPrefsChanged(CFNotificationCenterRef center, void *observer,
         c.detailTextLabel.text = @"视频素材";
         c.accessoryType = [s[@"materialId"] isEqualToString:m[@"id"]]
                           ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
-        c.editingAccessoryType = UITableViewCellAccessoryDeleteButton;
+        c.editingAccessoryType = UITableViewCellAccessoryDetailButton;
         return c;
     }
     // 导入行
@@ -527,7 +527,7 @@ static void NVBPrefsChanged(CFNotificationCenterRef center, void *observer,
     [picker dismissViewControllerAnimated:YES completion:nil];
     if (!results.count) return;
     PHPickerResult *res = results.firstObject;
-    NSItemProvider *provider = res.provider;
+    NSItemProvider *provider = res.itemProvider;
     __weak typeof(self) wself = self;
 
     [provider loadFileRepresentationForTypeIdentifier:@"public.movie"
@@ -724,19 +724,37 @@ static void NVBPrefsChanged(CFNotificationCenterRef center, void *observer,
 
 // 正文 / 编辑页
 %hook ICNoteBodyViewController
-- (void)viewWillAppear:(BOOL)animated { %orig; [[NVBManager shared] applyToViewController:self context:NVBContextNote]; }
-- (void)viewDidAppear:(BOOL)animated  { %orig; [[NVBManager shared] applyToViewController:self context:NVBContextNote]; }
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    [[NVBManager shared] applyToViewController:self context:NVBContextNote];
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    [[NVBManager shared] applyToViewController:self context:NVBContextNote];
+}
 %end
 
 %hook ICNoteEditViewController
-- (void)viewWillAppear:(BOOL)animated { %orig; [[NVBManager shared] applyToViewController:self context:NVBContextNote]; }
-- (void)viewDidAppear:(BOOL)animated  { %orig; [[NVBManager shared] applyToViewController:self context:NVBContextNote]; }
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    [[NVBManager shared] applyToViewController:self context:NVBContextNote];
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    [[NVBManager shared] applyToViewController:self context:NVBContextNote];
+}
 %end
 
 // 文件夹
 %hook ICFolderViewController
-- (void)viewWillAppear:(BOOL)animated { %orig; [[NVBManager shared] applyToViewController:self context:NVBContextFolder]; }
-- (void)viewDidAppear:(BOOL)animated  { %orig; [[NVBManager shared] applyToViewController:self context:NVBContextFolder]; }
+- (void)viewWillAppear:(BOOL)animated {
+    %orig;
+    [[NVBManager shared] applyToViewController:self context:NVBContextFolder];
+}
+- (void)viewDidAppear:(BOOL)animated {
+    %orig;
+    [[NVBManager shared] applyToViewController:self context:NVBContextFolder];
+}
 %end
 
 // 设置页入口: 导航栏右侧 "视频背景" 按钮
