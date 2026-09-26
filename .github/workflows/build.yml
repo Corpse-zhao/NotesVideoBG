@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,8 +35,12 @@ jobs:
           curl -L -q --retry 3 -o /tmp/tc.tar.lzma https://github.com/sbingner/llvm-project/releases/latest/download/linux-ios-arm64e-clang-toolchain.tar.lzma
           tar --lzma -xf /tmp/tc.tar.lzma -C /tmp/tc
           if [ -d /tmp/tc/bin ]; then cp -a /tmp/tc/. $TC/; else for d in /tmp/tc/*/; do cp -a "$d". $TC/; done; fi
-          # 新版 runner 无 libtinfo.so.5, 链接到 .6
-          sudo ln -sf /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
+          # 工具链依赖 libtinfo5 (LLVM-10), ubuntu-22.04 仓库有
+          sudo apt-get update -qq && sudo apt-get install -y -qq libtinfo5 || true
+          if ! ldconfig -p | grep -q libtinfo.so.5; then
+            curl -sL -o /tmp/t5.deb http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2_amd64.deb
+            sudo dpkg -x /tmp/t5.deb /tmp/t5 && sudo cp /tmp/t5/lib/x86_64-linux-gnu/libtinfo.so.5* /usr/lib/x86_64-linux-gnu/ && sudo ldconfig
+          fi
           ls $TC/bin/clang && $TC/bin/clang --version
 
       - name: Build package
