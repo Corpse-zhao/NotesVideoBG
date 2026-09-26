@@ -34,6 +34,7 @@ static char NVBBGKey; // VC 关联的背景视图
 // 前置声明
 @interface NVBVideoBackgroundView : UIView
 @property (nonatomic, copy) NSString *contextKey;
+@property (nonatomic, strong) AVPlayerLayer *videoLayer;
 - (instancetype)initWithFrame:(CGRect)frame contextKey:(NSString *)key;
 - (void)configure;
 @end
@@ -105,15 +106,15 @@ static NSString *NVBContextForClassName(NSString *name) {
 #pragma mark - 设置/播放管理器
 
 @interface NVBManager : NSObject
-@property (nonatomic, strong) NSMutableDictionary<NSString *, AVQueuePlayer *> *players;
-@property (nonatomic, strong) NSMutableDictionary<NSString *, AVPlayerLooper *> *loopers;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, AVPlayer *> *players;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, AVPlayerItem *> *items;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *playerPaths;
 + (instancetype)shared;
 - (NSUserDefaults *)prefs;
 - (NSMutableDictionary *)settingsForContext:(NSString *)ctx;
 - (void)saveSettings:(NSDictionary *)s forContext:(NSString *)ctx;
 - (NSString *)mediaDirectory;
-- (AVQueuePlayer *)playerForContext:(NSString *)ctx forceRebuild:(BOOL)force;
+- (AVPlayer *)playerForContext:(NSString *)ctx forceRebuild:(BOOL)force;
 - (void)applyToViewController:(UIViewController *)vc context:(NSString *)ctx;
 - (void)refreshVisibleBackgrounds;
 - (void)openSettings:(id)sender;
@@ -131,10 +132,25 @@ static NSString *NVBContextForClassName(NSString *name) {
 - (instancetype)init {
     if ((self = [super init])) {
         _players     = [NSMutableDictionary new];
-        _loopers     = [NSMutableDictionary new];
+        _items       = [NSMutableDictionary new];
         _playerPaths = [NSMutableDictionary new];
+        // 播完自动回到开头, 实现无缝循环
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(playerDidEnd:)
+                                                     name:AVPlayerItemDidPlayToEndTime
+                                                   object:nil];
     }
     return self;
+}
+
+- (void)playerDidEnd:(NSNotification *)n {
+    AVPlayerItem *item = n.object;
+    for (NSString *k in self.players) {
+        if (self.items[k] == item) {
+            [self.players[k] seekToTime:kCMTimeZero];
+            [self.players[k] play];
+        }
+    }
 }
 
 - (NSUserDefaults *)prefs {
@@ -169,27 +185,27 @@ static NSString *NVBContextForClassName(NSString *name) {
     return dir;
 }
 
-// 每个 context 一个 AVQueuePlayer + 无缝循环 (AVPlayerLooper)
-- (AVQueuePlayer *)playerForContext:(NSString *)ctx forceRebuild:(BOOL)force {
+// 每个 context 一个 AVPlayer, 播完回开头循环
+- (AVPlayer *)playerForContext:(NSString *)ctx forceRebuild:(BOOL)force {
     NSDictionary *s = [self settingsForContext:ctx];
     NSString *path = s[@"path"];
     if (path.length == 0) return nil;
 
-    AVQueuePlayer *p = self.players[ctx];
+    AVPlayer *p = self.players[ctx];
     if (p && !force && [self.playerPaths[ctx] isEqualToString:path]) return p;
 
-    [self.loopers[ctx] disableLooping];
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTime object:self.items[ctx]];
     [p pause];
-    [p removeAllItems];
     [self.players removeObjectForKey:ctx];
-    [self.loopers removeObjectForKey:ctx];
+    [self.items removeObjectForKey:ctx];
 
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:path] options:nil];
     AVPlayerItem *item = [AVPlayerItem playerItemWithAsset:asset];
-    p = [AVQueuePlayer queuePlayerWithItems:@[item]];
+    p = [AVPlayer playerWithPlayerItem:item];
     self.players[ctx]     = p;
+    self.items[ctx]       = item;
     self.playerPaths[ctx] = path;
-    self.loopers[ctx]     = [[AVPlayerLooper alloc] initWithPlayer:p templateItem:item];
+    p.actionAtItemEnd = AVPlayerActionAtItemEndNone;
     p.volume = [s[@"volume"] doubleValue];
     p.muted  = ([s[@"volume"] doubleValue] <= 0.001);
     [p play];
@@ -274,7 +290,7 @@ static NSString *NVBContextForClassName(NSString *name) {
     if (objc_getAssociatedObject(self, &NVBBGKey)) {} // no-op, 防 unused 警告
     UIViewController *host = NVBTopViewController();
     if (!host) return;
-    NVBSettingsListController *list = [[NVBSettingsListController alloc] initWithStyle:UITableViewStyleInsettedGrouped];
+    NVBSettingsListController *list = [[NVBSettingsListController alloc] initWithStyle:UITableViewStyleInsetGrouped];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:list];
     nav.modalPresentationStyle = UIModalPresentationFullScreen;
     [host presentViewController:nav animated:YES completion:nil];
@@ -318,7 +334,7 @@ static NSString *NVBContextForClassName(NSString *name) {
         return;
     }
 
-    AVQueuePlayer *p = [mgr playerForContext:self.contextKey forceRebuild:NO];
+    AVPlayer *p = [mgr playerForContext:self.contextKey forceRebuild:NO];
     if (p && self.videoLayer.player != p) self.videoLayer.player = p;
 
     // 模糊度
