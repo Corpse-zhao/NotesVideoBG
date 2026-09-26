@@ -1,0 +1,6 @@
+#!/bin/bash
+# 建立备忘录与设置进程共享的素材目录 (rootless)
+mkdir -p /var/jb/Library/NVBMedia 2>/dev/null
+chown -R mobile:mobile /var/jb/Library/NVBMedia 2>/dev/null
+chmod 755 /var/jb/Library/NVBMedia 2>/dev/null
+exit 0

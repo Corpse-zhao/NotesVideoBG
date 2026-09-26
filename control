@@ -1,8 +1,8 @@
 Package: com.nvb.notesvideobg
 Name: 备忘录视频背景
-Version: 2.0.0
+Version: 2.1.0
 Architecture: iphoneos-arm64
-Description: 备忘录视频背景 - 为苹果备忘录的正文/编辑页、文件夹、笔记列表、画廊、搜索、最近删除注入视频背景，支持相册导入多素材并自由选用，可调透明度/模糊度/音量，内置设置页并支持系统设置(OneSettings)显示。适配 rootless (Dopamine/ElleKit) iOS 16.x。
+Description: 备忘录视频背景 - 为苹果备忘录的正文/编辑页、文件夹、笔记列表、画廊、搜索、最近删除注入视频背景，支持相册导入多素材并自由选用，可调透明度/模糊度/音量。设置与素材管理在系统"设置"/OneSettings 的"备忘录视频背景"面板内完成。适配 rootless (Dopamine/ElleKit) iOS 16.x。
 Maintainer: 板栗仁
 Author: 板栗仁
 Section: Tweaks
