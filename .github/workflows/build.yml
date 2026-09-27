@@ -7,7 +7,10 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    # 必须用 macOS 运行器: Apple 原生 clang + ld64 产出正确的 arm64e 新 ABI 与
+    # LC_DYLD_CHAINED_FIXUPS。Linux 工具链 (ld64-609) 的链式修复是畸形 16 字节
+    # 命令, 注入 arm64e 的设置进程时 objc readClass 直接 SIGBUS (v2.2-v3.0 崩溃根因)。
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,41 +24,26 @@ jobs:
           path: theos
 
       - name: Install iOS SDK
-        run: |
-          git clone -q --depth 1 --filter=blob:none --sparse https://github.com/theos/sdks.git /tmp/sdks
-          cd /tmp/sdks
-          git sparse-checkout set iPhoneOS14.5.sdk
-          mkdir -p $GITHUB_WORKSPACE/theos/sdks
-          cp -r /tmp/sdks/iPhoneOS14.5.sdk $GITHUB_WORKSPACE/theos/sdks/
+        uses: actions/checkout@v4
+        with:
+          repository: theos/sdks
+          sparse-checkout: iPhoneOS14.5.sdk
+          path: theos/sdks
 
-      - name: Install iOS toolchain
+      - name: Install dependencies
         run: |
-          TC=$GITHUB_WORKSPACE/theos/toolchain/linux/iphone
-          mkdir -p $TC /tmp/tc
-          # Theos 官方 Linux 工具链 (L1ghtmann/llvm-project, apple LLVM + ld64-609 + Procursus ldid)。
-          # sbingner clang-10 的 arm64e 是老 ABI, 在 iOS 16 arm64e 进程 (设置) 的
-          # objc readClass 里必崩 (v2.2-v2.6 崩溃根因)。
-          curl -L -q --retry 3 -o /tmp/tc.tar.xz https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz
-          # 包内自带 linux/iphone 前缀, 直接解到 toolchain 根目录
-          tar -xf /tmp/tc.tar.xz -C $GITHUB_WORKSPACE/theos/toolchain/
-          # 工具链依赖 libtinfo5, ubuntu-22.04 仓库有
-          sudo apt-get update -qq && sudo apt-get install -y -qq libtinfo5 || true
-          if ! ldconfig -p | grep -q libtinfo.so.5; then
-            curl -sL -o /tmp/t5.deb http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2_amd64.deb
-            sudo dpkg -x /tmp/t5.deb /tmp/t5 && sudo cp /tmp/t5/lib/x86_64-linux-gnu/libtinfo.so.5* /usr/lib/x86_64-linux-gnu/ && sudo ldconfig
-          fi
-          ls $TC/bin/clang && $TC/bin/clang --version
+          brew install make xz ldid
+          gmake --version | head -1
+          ldid -V || true
 
       - name: Build package
         env:
           THEOS: ${{ github.workspace }}/theos
-        run: make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+        run: gmake package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
 
       - name: Diagnose Mach-O slices (log load commands per arch)
         run: |
-          for f in .theos/obj/NotesVideoBG.dylib .theos/obj/NVBPrefs.bundle/NVBPrefs; do
-            if [ -f "$f" ]; then python3 tools/macho_dump.py "$f"; fi
-          done
+          if [ -f .theos/obj/NotesVideoBG.dylib ]; then python3 tools/macho_dump.py .theos/obj/NotesVideoBG.dylib; fi
           ls .theos/obj/ 2>/dev/null | head
 
       - name: Upload .deb artifact
