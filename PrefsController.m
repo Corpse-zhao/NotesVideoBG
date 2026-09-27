@@ -28,6 +28,7 @@
 
 @interface PSSpecifier : NSObject
 - (id)propertyForKey:(NSString *)key;
+- (void)setProperty:(id)property forKey:(NSString *)key;
 @end
 
 #pragma mark - 设备端调试日志 (多通道必达: 偏好文件 + 多路径)
@@ -254,21 +255,111 @@ static Ivar NVBSpecifiersIvar(void) {
 
 @implementation NVBPrefsController
 
-// 经典写法: 首次调用时从 Root.plist 加载并缓存到 _specifiers
++ (void)load {
+    // 本类随主插件 dylib 注入设置进程后立即记录 (证明注入成功)
+    NVBLogRaw([NSString stringWithFormat:@"[%@] +load: NVBPrefsController registered (v3.0, in dylib)\n", [NSDate date]]);
+}
+
+// 纯代码构建 specifiers (彻底摆脱 plist 文件与 bundle 加载)
+static void NVBSetProp(id spec, NSString *k, id v) {
+    ((void (*)(id, SEL, id, id))objc_msgSend)(spec, @selector(setProperty:forKey:), v, k);
+}
+
+static id NVBMakeSpec(NSString *label) {
+    Class specCls = NSClassFromString(@"PSSpecifier");
+    SEL pSel = NSSelectorFromString(@"preferenceSpecifierNamed:target:set:get:detail:cell:edit:");
+    if (!specCls || !((BOOL (*)(id, SEL, SEL))objc_msgSend)(specCls, @selector(respondsToSelector:), pSel))
+        return nil;
+    return ((id (*)(id, SEL, NSString *, id, SEL, SEL, id, long, id))objc_msgSend)(
+        specCls, pSel, label, nil, nil, nil, nil, (long)1, nil);
+}
+
+static id NVBGroupSpec(NSString *label, NSString *footer) {
+    id g = NVBMakeSpec(label);
+    if (!g) return nil;
+    NVBSetProp(g, @"cell", @"PSGroupCell");
+    if (footer) NVBSetProp(g, @"footerText", footer);
+    return g;
+}
+
+static id NVBSwitchSpec(NSString *label, NSString *key, BOOL def) {
+    id s = NVBMakeSpec(label);
+    if (!s) return nil;
+    NVBSetProp(s, @"cell", @"PSSwitchCell");
+    NVBSetProp(s, @"defaults", @"com.nvb.notesvideobg");
+    NVBSetProp(s, @"key", key);
+    NVBSetProp(s, @"default", @(def));
+    NVBSetProp(s, @"PostNotification", @"com.nvb.notesvideobg/prefs.changed");
+    NVBSetProp(s, @"set", @"setPreferenceValue:specifier:");
+    NVBSetProp(s, @"get", @"readPreferenceValue:");
+    return s;
+}
+
+static id NVBSliderSpec(NSString *label, NSString *key, double minV, double maxV, double def) {
+    id s = NVBMakeSpec(label);
+    if (!s) return nil;
+    NVBSetProp(s, @"cell", @"PSSliderCell");
+    NVBSetProp(s, @"defaults", @"com.nvb.notesvideobg");
+    NVBSetProp(s, @"key", key);
+    NVBSetProp(s, @"min", @(minV));
+    NVBSetProp(s, @"max", @(maxV));
+    NVBSetProp(s, @"default", @(def));
+    NVBSetProp(s, @"isContinuous", @(YES));
+    NVBSetProp(s, @"PostNotification", @"com.nvb.notesvideobg/prefs.changed");
+    NVBSetProp(s, @"set", @"setPreferenceValue:specifier:");
+    NVBSetProp(s, @"get", @"readPreferenceValue:");
+    return s;
+}
+
+static id NVBLinkSpec(NSString *label, NSString *detailCls, NSString *ctx, NSString *ctxTitle) {
+    id s = NVBMakeSpec(label);
+    if (!s) return nil;
+    NVBSetProp(s, @"cell", @"PSLinkCell");
+    NVBSetProp(s, @"detail", detailCls);
+    NVBSetProp(s, @"context", ctx);
+    NVBSetProp(s, @"contextTitle", ctxTitle);
+    return s;
+}
+
+- (NSArray *)NVBBuildSpecifiers {
+    NSMutableArray *out_ = [NSMutableArray array];
+    id g = NVBGroupSpec(@"总开关",
+        @"关闭后所有界面的视频背景立即停用。素材需先在下方各功能的「选择素材」里从相册导入。");
+    if (g) [out_ addObject:g];
+    id sw = NVBSwitchSpec(@"启用视频背景", @"master_enabled", YES);
+    if (sw) [out_ addObject:sw];
+
+    for (NSArray<NSString *> *def in NVBContextDefinitions()) {
+        NSString *k = def[0], *title = def[1], *desc = def[2];
+        id gg = NVBGroupSpec(title, desc);
+        if (gg) [out_ addObject:gg];
+        id e = NVBSwitchSpec(@"开启背景", [k stringByAppendingString:@"_enabled"], NO);
+        if (e) [out_ addObject:e];
+        id l = NVBLinkSpec(@"选择素材", @"NVBMaterialListController", k, title);
+        if (l) [out_ addObject:l];
+        id b = NVBSliderSpec(@"模糊度", [k stringByAppendingString:@"_blur"], 0, 30, 8);
+        if (b) [out_ addObject:b];
+        id a = NVBSliderSpec(@"不透明度", [k stringByAppendingString:@"_alpha"], 0, 1, 0.65);
+        if (a) [out_ addObject:a];
+        id v = NVBSliderSpec(@"音量", [k stringByAppendingString:@"_volume"], 0, 1, 1);
+        if (v) [out_ addObject:v];
+    }
+    NVBLog(@"specifiers built programmatically: %lu", (unsigned long)out_.count);
+    return out_;
+}
+
 - (NSArray *)specifiers {
     @try {
         Ivar iv = NVBSpecifiersIvar();
         id cur = iv ? object_getIvar(self, iv) : nil;
-        if (cur) return cur;
+        if (cur && [cur count] > 0) return cur;
 
-        cur = [self loadSpecifiersFromPlistName:@"Root" target:self];
-        NSUInteger n = [cur count];
-        NVBLog(@"specifiers loaded: %lu entries", (unsigned long)n);
-        if (n > 0) {
+        cur = [self NVBBuildSpecifiers];
+        if ([cur count] > 0) {
             if (iv) object_setIvar(self, iv, cur);
             return cur;
         }
-        NVBLog(@"specifiers EMPTY -> fallback (Root.plist 未找到或解析为空)");
+        NVBLog(@"specifiers EMPTY -> fallback");
     } @catch (NSException *e) {
         NVBLog(@"specifiers EXCEPTION: %@ / %@", e.name, e.reason);
     }

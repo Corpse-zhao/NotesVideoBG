@@ -8,8 +8,10 @@
 		<string>PSLinkCell</string>
 		<key>label</key>
 		<string>备忘录视频背景</string>
-		<key>bundle</key>
-		<string>NVBPrefs</string>
+		<key>isController</key>
+		<true/>
+		<key>entryControllerClass</key>
+		<string>NVBPrefsController</string>
 	</dict>
 </dict>
 </plist>

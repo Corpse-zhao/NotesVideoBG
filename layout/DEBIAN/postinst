@@ -4,16 +4,21 @@ mkdir -p /var/jb/Library/NVBMedia 2>/dev/null
 chown -R mobile:mobile /var/jb/Library/NVBMedia 2>/dev/null
 chmod 755 /var/jb/Library/NVBMedia 2>/dev/null
 
-# 安装自检清单: 记录 bundle 实际落盘状态 (root 执行, 必然可写)
+# 清理旧版残留的独立设置 bundle (v2.x 遗留, 现面板已并入主插件)
+for base in /var/jb /var/mobile/.jbroot*; do
+  [ -d "$base/Library/PreferenceBundles/NVBPrefs.bundle" ] && rm -rf "$base/Library/PreferenceBundles/NVBPrefs.bundle"
+done
+
+# 安装自检清单: 记录主插件落盘状态 (root 执行, 必然可写)
 LOG=/var/mobile/Documents/nvb_install.log
 {
-  echo "=== postinst $(date) version=$(grep '^Version:' /var/jb/Library/PreferenceBundles/NVBPrefs.bundle/../../DEBIAN/control 2>/dev/null || echo '?')"
+  echo "=== postinst $(date) v3.0.0"
   for base in /var/jb /var/mobile/.jbroot*; do
-    B="$base/Library/PreferenceBundles/NVBPrefs.bundle"
-    if [ -d "$B" ]; then
-      echo "--- found: $B"
-      ls -la "$B"
-      md5sum "$B/NVBPrefs" 2>/dev/null
+    D="$base/Library/MobileSubstrate/DynamicLibraries"
+    if [ -f "$D/NotesVideoBG.dylib" ]; then
+      echo "--- found: $D"
+      ls -la "$D" | grep -i notesvideo
+      md5sum "$D/NotesVideoBG.dylib" 2>/dev/null
     fi
   done
 } >> "$LOG" 2>&1
