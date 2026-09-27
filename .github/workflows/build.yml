@@ -32,11 +32,12 @@ jobs:
         run: |
           TC=$GITHUB_WORKSPACE/theos/toolchain/linux/iphone
           mkdir -p $TC /tmp/tc
-          # clang>=12 (iOS 14+ arm64e ABI). clang-10 toolchain produces old-ABI arm64e
-          # slices that SIGBUS in objc readClass on iOS 16 arm64e processes (Settings).
+          # Theos 官方 Linux 工具链 (L1ghtmann/llvm-project, apple LLVM + ld64-609 + Procursus ldid)。
+          # sbingner clang-10 的 arm64e 是老 ABI, 在 iOS 16 arm64e 进程 (设置) 的
+          # objc readClass 里必崩 (v2.2-v2.6 崩溃根因)。
           curl -L -q --retry 3 -o /tmp/tc.tar.xz https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz
-          tar -xf /tmp/tc.tar.xz -C /tmp/tc
-          if [ -d /tmp/tc/bin ]; then cp -a /tmp/tc/. $TC/; else for d in /tmp/tc/*/; do cp -a "$d". $TC/; done; fi
+          # 包内自带 linux/iphone 前缀, 直接解到 toolchain 根目录
+          tar -xf /tmp/tc.tar.xz -C $GITHUB_WORKSPACE/theos/toolchain/
           # 工具链依赖 libtinfo5, ubuntu-22.04 仓库有
           sudo apt-get update -qq && sudo apt-get install -y -qq libtinfo5 || true
           if ! ldconfig -p | grep -q libtinfo.so.5; then
