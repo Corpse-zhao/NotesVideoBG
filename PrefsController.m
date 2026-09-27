@@ -30,6 +30,39 @@
 - (id)propertyForKey:(NSString *)key;
 @end
 
+#pragma mark - 设备端调试日志 (Filza 可直接查看)
+
+static NSString *NVBLogPath(void) {
+    static NSString *p = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        if ([[NSFileManager defaultManager] isWritableFileAtPath:@"/var/mobile/Documents"])
+            p = @"/var/mobile/Documents/nvb_debug.log";
+        else
+            p = [NSTemporaryDirectory() stringByAppendingPathComponent:@"nvb_debug.log"];
+    });
+    return p;
+}
+
+static void NVBLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
+static void NVBLog(NSString *fmt, ...) {
+    @try {
+        va_list args;
+        va_start(args, fmt);
+        NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
+        va_end(args);
+        NSString *line = [NSString stringWithFormat:@"[%@] %@\n",
+                          [NSDate date], msg];
+        FILE *f = fopen(NVBLogPath().UTF8String, "a");
+        if (f) { fputs(line.UTF8String, f); fclose(f); }
+    } @catch (NSException *e) {}
+}
+
+// bundle 被 dlopen 的第一时刻
+__attribute__((constructor)) static void NVBPrefsBundleLoaded(void) {
+    NVBLog(@"=== NVBPrefs bundle loaded (v2.8) ===");
+}
+
 #pragma mark - 素材管理页 (相册导入 / 选用 / 删除)
 
 @interface NVBMaterialListController : UITableViewController
@@ -42,6 +75,7 @@
 
 // PS 推入 detail 控制器时使用 initWithSpecifier:, 从 specifier 属性取目标界面
 - (instancetype)initWithSpecifier:(PSSpecifier *)spec {
+    NVBLog(@"MaterialList initWithSpecifier: %@", spec);
     if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
         _contextKey    = NVBContextNote;
         _contextTitle  = @"";
@@ -214,26 +248,58 @@ static Ivar NVBSpecifiersIvar(void) {
 
 // 经典写法: 首次调用时从 Root.plist 加载并缓存到 _specifiers
 - (NSArray *)specifiers {
-    Ivar iv = NVBSpecifiersIvar();
-    if (iv) {
-        id cur = object_getIvar(self, iv);
+    @try {
+        Ivar iv = NVBSpecifiersIvar();
+        id cur = iv ? object_getIvar(self, iv) : nil;
         if (cur) return cur;
-        @try {
-            cur = [self loadSpecifiersFromPlistName:@"Root" target:self];
-            if (cur) object_setIvar(self, iv, cur);
-            return cur ?: @[];
-        } @catch (NSException *e) {
-            return @[];
+
+        cur = [self loadSpecifiersFromPlistName:@"Root" target:self];
+        NSUInteger n = [cur count];
+        NVBLog(@"specifiers loaded: %lu entries", (unsigned long)n);
+        if (n > 0) {
+            if (iv) object_setIvar(self, iv, cur);
+            return cur;
+        }
+        NVBLog(@"specifiers EMPTY -> fallback (Root.plist 未找到或解析为空)");
+    } @catch (NSException *e) {
+        NVBLog(@"specifiers EXCEPTION: %@ / %@", e.name, e.reason);
+    }
+    return [self NVBFallbackSpecifiers];
+}
+
+// 兜底: 至少显示一行错误提示 + 日志路径, 不再白屏
+- (NSArray *)NVBFallbackSpecifiers {
+    NSMutableArray *out_ = [NSMutableArray array];
+    Class specCls = NSClassFromString(@"PSSpecifier");
+    if (specCls) {
+        id group = ((id (*)(id, SEL, NSString *, id, id, id, id, long, id))objc_msgSend)(
+            specCls, @selector(preferenceSpecifierNamed:target:set:get:detail:cell:edit:),
+            @"设置加载失败", nil, nil, nil, nil, (long)1 /*PSGroupCell*/, nil);
+        if (group) {
+            ((void (*)(id, SEL, id, NSString *))objc_msgSend)(
+                group, @selector(setProperty:forKey:),
+                @"Root.plist 加载失败。请把 /var/mobile/Documents/nvb_debug.log 发给开发者。",
+                @"footerText");
+            [out_ addObject:group];
         }
     }
-    return [self loadSpecifiersFromPlistName:@"Root" target:self] ?: @[];
+    NVBLog(@"fallback specifiers returned (%lu)", (unsigned long)out_.count);
+    return out_;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    NVBLog(@"PrefsController viewDidLoad, title=%@", self.title);
     @try {
         self.title = @"备忘录视频背景";
     } @catch (NSException *e) {}
 }
 
+@end
+
+// 别名类: 若 Preferences 通过 CFBundlePrincipalClass / 类名 "NVBPrefs" 查找
+// (theos 生成模板默认把主类名写成 bundle 名), 也能拿到一个可用的控制器。
+@interface NVBPrefs : NVBPrefsController
+@end
+@implementation NVBPrefs
 @end
