@@ -48,6 +48,13 @@ jobs:
           THEOS: ${{ github.workspace }}/theos
         run: make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
 
+      - name: Diagnose Mach-O slices (log load commands per arch)
+        run: |
+          for f in .theos/obj/NotesVideoBG.dylib .theos/obj/NVBPrefs.bundle/NVBPrefs; do
+            if [ -f "$f" ]; then python3 tools/macho_dump.py "$f"; fi
+          done
+          ls .theos/obj/ 2>/dev/null | head
+
       - name: Synthesize arm64e slice (Settings/OneSettings are arm64e processes)
         env:
           THEOS: ${{ github.workspace }}/theos
