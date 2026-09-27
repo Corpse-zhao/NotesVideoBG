@@ -22,10 +22,10 @@ ALIGN = 14  # 16 KB page alignment
 def make_fat(path):
     with open(path, 'rb') as f:
         d = f.read()
-    magic = struct.unpack_from('<I', d, 0)[0]
-    if magic == 0xCAFEBABE:
+    if d[:4] == b'\xca\xfe\xba\xbe':
         print(f'{path}: already a fat binary, skip')
         return
+    magic = struct.unpack_from('<I', d, 0)[0]
     if magic != 0xFEEDFACF:
         raise SystemExit(f'{path}: not a 64-bit Mach-O (magic {magic:#x})')
     cputype, cpusub, filetype = struct.unpack_from('<iiI', d, 4)
