@@ -13,10 +13,9 @@ TWEAK_NAME = NotesVideoBG
 NotesVideoBG_FILES = Tweak.x NVBCommon.m PrefsController.m
 NotesVideoBG_FRAMEWORKS = UIKit AVFoundation CoreMedia
 # 设置面板类 (PSListController 子类) 在本 dylib 内, 需链接 Preferences
-# -Wl,-fixup_chains: arm64e 切片必须用 LC_DYLD_CHAINED_FIXUPS 链式修复。
-# iOS16 的 arm64e 若用老式 LC_DYLD_INFO 编码, ObjC 类的认证指针 isa/superclass
-# 无法被正确修复, objc readClass 直接 SIGBUS -> 设置启动即崩 (v3.0 崩溃根因)。
-NotesVideoBG_LDFLAGS = -framework Preferences -Wl,-fixup_chains
+# -F: Apple ld 不会自动搜索 SDK 的 PrivateFrameworks, 需显式指定 (macOS CI 必需)
+# -Wl,-fixup_chains: 显式启用链式修复 (macOS Apple ld 默认对 iOS14+ 已启用, 保险起见)
+NotesVideoBG_LDFLAGS = -framework Preferences -Wl,-fixup_chains -F$(THEOS)/sdks/iPhoneOS14.5.sdk/System/Library/PrivateFrameworks
 NotesVideoBG_CFLAGS = -fobjc-arc -fno-threadsafe-statics -Wno-deprecated-declarations
 
 include $(THEOS_MAKE_PATH)/tweak.mk
