@@ -12,7 +12,7 @@ done
 # 安装自检清单: 记录主插件落盘状态 (root 执行, 必然可写)
 LOG=/var/mobile/Documents/nvb_install.log
 {
-  echo "=== postinst $(date) v3.0.0"
+  echo "=== postinst $(date) v3.1.0"
   for base in /var/jb /var/mobile/.jbroot*; do
     D="$base/Library/MobileSubstrate/DynamicLibraries"
     if [ -f "$D/NotesVideoBG.dylib" ]; then
