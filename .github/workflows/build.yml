@@ -32,10 +32,12 @@ jobs:
         run: |
           TC=$GITHUB_WORKSPACE/theos/toolchain/linux/iphone
           mkdir -p $TC /tmp/tc
-          curl -L -q --retry 3 -o /tmp/tc.tar.lzma https://github.com/sbingner/llvm-project/releases/latest/download/linux-ios-arm64e-clang-toolchain.tar.lzma
-          tar --lzma -xf /tmp/tc.tar.lzma -C /tmp/tc
+          # clang>=12 (iOS 14+ arm64e ABI). clang-10 toolchain produces old-ABI arm64e
+          # slices that SIGBUS in objc readClass on iOS 16 arm64e processes (Settings).
+          curl -L -q --retry 3 -o /tmp/tc.tar.xz https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-x86_64.tar.xz
+          tar -xf /tmp/tc.tar.xz -C /tmp/tc
           if [ -d /tmp/tc/bin ]; then cp -a /tmp/tc/. $TC/; else for d in /tmp/tc/*/; do cp -a "$d". $TC/; done; fi
-          # 工具链依赖 libtinfo5 (LLVM-10), ubuntu-22.04 仓库有
+          # 工具链依赖 libtinfo5, ubuntu-22.04 仓库有
           sudo apt-get update -qq && sudo apt-get install -y -qq libtinfo5 || true
           if ! ldconfig -p | grep -q libtinfo.so.5; then
             curl -sL -o /tmp/t5.deb http://archive.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2_amd64.deb
@@ -54,28 +56,6 @@ jobs:
             if [ -f "$f" ]; then python3 tools/macho_dump.py "$f"; fi
           done
           ls .theos/obj/ 2>/dev/null | head
-
-      - name: Synthesize arm64e slice (Settings/OneSettings are arm64e processes)
-        env:
-          THEOS: ${{ github.workspace }}/theos
-        run: |
-          DEB=$(ls packages/*.deb)
-          rm -rf /tmp/debx && mkdir -p /tmp/debx
-          dpkg-deb -R "$DEB" /tmp/debx
-          python3 tools/arm64e_fat.py \
-            /tmp/debx/var/jb/Library/PreferenceBundles/NVBPrefs.bundle/NVBPrefs \
-            /tmp/debx/var/jb/Library/MobileSubstrate/DynamicLibraries/NotesVideoBG.dylib
-          LDID_BIN="$(command -v ldid || true)"
-          if [ -z "$LDID_BIN" ] && [ -x theos/bin/ldid ]; then LDID_BIN=theos/bin/ldid; fi
-          if [ -z "$LDID_BIN" ]; then
-            curl -sL --retry 3 -o /tmp/ldid https://github.com/ProcursusTeam/ldid/releases/latest/download/ldid_linux_x86_64
-            chmod +x /tmp/ldid
-            LDID_BIN=/tmp/ldid
-          fi
-          "$LDID_BIN" -S /tmp/debx/var/jb/Library/PreferenceBundles/NVBPrefs.bundle/NVBPrefs
-          "$LDID_BIN" -S /tmp/debx/var/jb/Library/MobileSubstrate/DynamicLibraries/NotesVideoBG.dylib
-          dpkg-deb -b /tmp/debx "$DEB"
-          ls -la packages/
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
