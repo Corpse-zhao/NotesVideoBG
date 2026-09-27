@@ -30,18 +30,27 @@
 - (id)propertyForKey:(NSString *)key;
 @end
 
-#pragma mark - 设备端调试日志 (Filza 可直接查看)
+#pragma mark - 设备端调试日志 (多通道必达: 偏好文件 + 多路径)
 
-static NSString *NVBLogPath(void) {
-    static NSString *p = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        if ([[NSFileManager defaultManager] isWritableFileAtPath:@"/var/mobile/Documents"])
-            p = @"/var/mobile/Documents/nvb_debug.log";
-        else
-            p = [NSTemporaryDirectory() stringByAppendingPathComponent:@"nvb_debug.log"];
-    });
-    return p;
+static void NVBLogRaw(NSString *line) {
+    // 通道 1: NSUserDefaults 套件 (PSSwitchCell 同款写入方式, 设置进程必然可写)
+    // Filza 查看: /var/mobile/Library/Preferences/com.nvb.notesvideobg.plist -> nvb_debug_log
+    @try {
+        NSUserDefaults *ud = [[NSUserDefaults alloc] initWithSuiteName:@"com.nvb.notesvideobg"];
+        NSString *old = [ud stringForKey:@"nvb_debug_log"] ?: @"";
+        NSString *nu = [old stringByAppendingString:line];
+        if (nu.length > 12000) nu = [nu substringFromIndex:nu.length - 12000];
+        [ud setObject:nu forKey:@"nvb_debug_log"];
+        [ud synchronize];
+    } @catch (NSException *e) {}
+    // 通道 2/3: 常见可写目录
+    for (NSString *p in (@[@"/var/mobile/Documents/nvb_debug.log",
+                           @"/var/mobile/Library/nvb_debug.log"])) {
+        FILE *f = fopen(p.UTF8String, "a");
+        if (f) { fputs(line.UTF8String, f); fclose(f); }
+    }
+    FILE *tf2 = fopen([NSTemporaryDirectory() stringByAppendingPathComponent:@"nvb_debug.log"].UTF8String, "a");
+    if (tf2) { fputs(line.UTF8String, tf2); fclose(tf2); }
 }
 
 static void NVBLog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
@@ -53,14 +62,13 @@ static void NVBLog(NSString *fmt, ...) {
         va_end(args);
         NSString *line = [NSString stringWithFormat:@"[%@] %@\n",
                           [NSDate date], msg];
-        FILE *f = fopen(NVBLogPath().UTF8String, "a");
-        if (f) { fputs(line.UTF8String, f); fclose(f); }
+        NVBLogRaw(line);
     } @catch (NSException *e) {}
 }
 
 // bundle 被 dlopen 的第一时刻
 __attribute__((constructor)) static void NVBPrefsBundleLoaded(void) {
-    NVBLog(@"=== NVBPrefs bundle loaded (v2.8) ===");
+    NVBLogRaw([NSString stringWithFormat:@"[%@] === NVBPrefs bundle loaded (v2.9) ===\n", [NSDate date]]);
 }
 
 #pragma mark - 素材管理页 (相册导入 / 选用 / 删除)
